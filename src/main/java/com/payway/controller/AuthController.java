@@ -24,8 +24,6 @@ public class AuthController {
         return new ResponseEntity<>(bankResponse, bankResponse.getHttpStatus());
     }
 
-
-
     @PostMapping("/login")
     public ResponseEntity<BankResponse> signInUser(@RequestBody @Valid LoginRequestDto loginRequestDto){
         BankResponse bankResponse = userService.signInUser(loginRequestDto);

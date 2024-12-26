@@ -17,8 +17,5 @@ public class UserResponseDto {
     private LocalDate dateOfBirth;
     private String address;
     private String email;
-    private String bvn;
     private String phoneNumber;
-    private String NIN;
-    private String utilityBill;
 }

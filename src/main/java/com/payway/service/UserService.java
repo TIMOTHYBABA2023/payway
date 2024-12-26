@@ -20,4 +20,9 @@ public interface UserService {
 
     BankResponse deleteUser(Long userId);
 
+    BankResponse upgradeToSilverTier(String silverTierRequest);
+
+    BankResponse upgradeToGoldTier(String goldTierRequest);
+
+    BankResponse upgradeToPlatinumTier(String platinumTierRequest);
 }

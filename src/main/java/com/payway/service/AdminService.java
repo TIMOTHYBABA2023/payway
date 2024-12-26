@@ -2,6 +2,7 @@ package com.payway.service;
 
 import com.payway.dto.BankResponse;
 import com.payway.dto.requestDto.UserUpdateDto;
+import com.payway.model.User;
 import org.springframework.stereotype.Service;
 
 public interface AdminService {
@@ -9,7 +10,7 @@ public interface AdminService {
 
     BankResponse getAdminById(Long id);
 
-    BankResponse createAdmin(UserUpdateDto userUpdateDto, Long id);
+    BankResponse createAdmin(User user);
 
     BankResponse updateAdmin(UserUpdateDto userUpdateDto, Long id);
 

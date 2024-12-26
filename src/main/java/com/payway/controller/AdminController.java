@@ -2,6 +2,7 @@ package com.payway.controller;
 
 import com.payway.dto.BankResponse;
 import com.payway.dto.requestDto.UserUpdateDto;
+import com.payway.model.User;
 import com.payway.service.AdminService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -29,10 +30,9 @@ public class AdminController {
         return new ResponseEntity<>(genericResponse, genericResponse.getHttpStatus());
     }
 
-
     @PostMapping("")
-    public ResponseEntity<BankResponse> createAdmin(@RequestBody UserUpdateDto userUpdateDto, @PathVariable Long id){
-        BankResponse genericResponse = adminService.createAdmin(userUpdateDto, id);
+    public ResponseEntity<BankResponse> createAdmin(@RequestBody User user){
+        BankResponse genericResponse = adminService.createAdmin(user);
         return new ResponseEntity<>(genericResponse, genericResponse.getHttpStatus());
     }
 

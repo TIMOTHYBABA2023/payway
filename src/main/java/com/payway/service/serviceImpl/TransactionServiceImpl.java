@@ -26,7 +26,13 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
+import java.time.DayOfWeek;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.temporal.TemporalAdjusters;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.List;
 
 @Service
 @RequiredArgsConstructor
@@ -41,6 +47,7 @@ public class TransactionServiceImpl implements TransactionService {
     private final TransactionRepository transactionRepository;
 
     @Override
+    @Transactional
     public BankResponse fundWallet(BigDecimal amount) {
         if (amount.compareTo(BigDecimal.valueOf(50)) < 0) {
             throw new InvalidCredentialsException("Funding amount must be greater than 50 Naira.");
@@ -56,6 +63,7 @@ public class TransactionServiceImpl implements TransactionService {
         }
 
         walletRepository.save(wallet);
+        fundingTransaction(wallet.getId(), amount, amount, wallet.getAccountBalance(), wallet.getAccountNumber(), TransactionStatus.SUCCESSFUL);
 
         return BankResponse.builder()
                 .isSuccess(true)
@@ -66,6 +74,7 @@ public class TransactionServiceImpl implements TransactionService {
     }
 
     @Override
+    @Transactional
     public BankResponse withdraw(BigDecimal amount) {
         if (amount.compareTo(BigDecimal.valueOf(50)) < 0) {
             throw new InvalidCredentialsException("Withdrawal amount must be greater than 50 Naira.");
@@ -78,13 +87,23 @@ public class TransactionServiceImpl implements TransactionService {
         if (previousAccountBalance.compareTo(totalDeduction) < 0) {
             throw new InvalidCredentialsException("Insufficient balance for requested amount.");
         }
-        if(wallet.getStatus().equals(AccountStatus.INACTIVE)){
+        if (wallet.getStatus().equals(AccountStatus.INACTIVE)) {
             throw new InvalidCredentialsException("Activate your wallet by funding with at least ₦500");
         }
 
         BigDecimal newAccountBalance = previousAccountBalance.subtract(totalDeduction);
         wallet.setAccountBalance(newAccountBalance);
         walletRepository.save(wallet);
+
+        // Add transaction charge to universal account
+        Wallet universalWallet = walletRepository.findWalletByAccountNumber(universalAccount);
+        BigDecimal newUniversalBalance = universalWallet.getAccountBalance().add(transactionCharge);
+        universalWallet.setAccountBalance(newUniversalBalance);
+        walletRepository.save(universalWallet);
+        fundingTransaction(universalWallet.getId(), transactionCharge, transactionCharge, universalWallet.getAccountBalance(), universalAccount, TransactionStatus.SUCCESSFUL);
+
+
+        withdrawalTransaction(wallet.getId(), amount, transactionCharge, totalDeduction, wallet.getAccountBalance(), wallet.getAccountNumber(), TransactionStatus.SUCCESSFUL);
 
         return BankResponse.builder()
                 .isSuccess(true)
@@ -102,45 +121,57 @@ public class TransactionServiceImpl implements TransactionService {
         if (senderWallet.getStatus().equals(AccountStatus.INACTIVE)) {
             throw new InvalidCredentialsException("Activate your wallet by funding with at least ₦500");
         }
+
         BigDecimal previousAccountBalance = senderWallet.getAccountBalance();
         BigDecimal transactionCharge = calculateTransactionCharge(amount, senderWallet.getAccountTier());
         BigDecimal totalDeduction = amount.add(transactionCharge);
 
-        if (previousAccountBalance.compareTo(totalDeduction) < 0) {
-            throw new InvalidCredentialsException("Insufficient funds to cover transaction charges. Current balance: ₦" + previousAccountBalance);
+        BigDecimal transactionLimit = calculateInstantTransactionLimit(totalDeduction, senderWallet.getAccountTier());
+        if (totalDeduction.compareTo(transactionLimit) > 0) {
+            throw new InvalidCredentialsException("Transaction amount exceeds the limit for your account tier.");
         }
-        logger.info("Account balance: {}", senderWallet.getAccountBalance());
 
-        // Deduct total amount from sender's wallet
-        BigDecimal newSenderBalance = senderWallet.getAccountBalance().subtract(totalDeduction);
-        senderWallet.setAccountBalance(newSenderBalance);
-        walletRepository.save(senderWallet);
-
-        logger.info("Account balance: {}", senderWallet.getAccountBalance());
+        // Check daily and weekly transaction limits
+        checkDailyTransactionLimit(senderWallet, totalDeduction);
+        checkWeeklyTransactionLimit(senderWallet, totalDeduction);
 
         // Log the calculated values for debugging
         logger.info("Amount: {}", amount);
         logger.info("Transaction Charge: {}", transactionCharge);
         logger.info("Total Deduction: {}", totalDeduction);
+        logger.info("Previous Account Balance: {}", previousAccountBalance);
+
+        // Deduct total amount from sender's wallet
+        deductBalance(senderWallet, totalDeduction);
 
         // Add transaction charge to universal account
         Wallet universalWallet = walletRepository.findWalletByAccountNumber(universalAccount);
         BigDecimal newUniversalBalance = universalWallet.getAccountBalance().add(transactionCharge);
         universalWallet.setAccountBalance(newUniversalBalance);
         walletRepository.save(universalWallet);
+        fundingTransaction(universalWallet.getId(), transactionCharge, transactionCharge, universalWallet.getAccountBalance(), universalAccount, TransactionStatus.SUCCESSFUL);
 
-        // Transfer amount to recipient's wallet
+        // Log the new universal balance
+        logger.info("New Universal Balance: {}", newUniversalBalance);
+
+        // Recipient's wallet
         Wallet recipientWallet = walletRepository.findWalletByAccountNumber(recipientAccount);
 
-        if (recipientWallet.getStatus().equals(AccountStatus.INACTIVE)) {
-            throw new InvalidCredentialsException("Recipient account is not active");
-        }
+        // Check maximum balance limit for recipient
+        BigDecimal recipientMaxBalance = getMaxBalanceLimit(recipientWallet.getAccountTier());
         BigDecimal newRecipientBalance = recipientWallet.getAccountBalance().add(amount);
+
+        if (newRecipientBalance.compareTo(recipientMaxBalance) > 0) {
+            throw new InvalidCredentialsException("Recipient's account balance exceeds the maximum limit for their account tier.");
+        }
+
+        // Update recipient's balance
         recipientWallet.setAccountBalance(newRecipientBalance);
         walletRepository.save(recipientWallet);
+        fundingTransaction(recipientWallet.getId(), amount, amount, recipientWallet.getAccountBalance(), recipientAccount, TransactionStatus.SUCCESSFUL);
 
-        logTransaction(senderWallet.getId(), amount, transactionCharge, totalDeduction, recipientAccount, TransactionType.TRANSFER, TransactionStatus.SUCCESSFUL);
-        logger.info("Account balance: {}", senderWallet.getAccountBalance());
+        // Log the new recipient balance
+        logger.info("New Recipient Balance: {}", newRecipientBalance);
 
         return BankResponse.builder()
                 .isSuccess(true)
@@ -148,47 +179,6 @@ public class TransactionServiceImpl implements TransactionService {
                 .httpStatus(HttpStatus.OK)
                 .build();
     }
-
-    private BigDecimal calculateTransactionCharge(BigDecimal amount, AccountTier accountTier) {
-        BigDecimal rate = switch (accountTier) {
-            case SILVER -> BigDecimal.valueOf(0.012);
-            case GOLD -> BigDecimal.valueOf(0.014);
-            case PLATINUM -> BigDecimal.valueOf(0.015);
-            default -> BigDecimal.valueOf(0.01);
-        };
-        return amount.multiply(rate);
-    }
-    private BigDecimal calculateTransactionLimit(BigDecimal amount, AccountTier accountTier) {
-        return switch (accountTier) {
-            case SILVER -> BigDecimal.valueOf(500000);
-            case GOLD -> BigDecimal.valueOf(1000000);
-            case PLATINUM -> BigDecimal.valueOf(Double.MAX_VALUE);
-            default -> BigDecimal.valueOf(200000);
-        };
-    }
-
-    private void logTransaction(Long walletId, BigDecimal amount, BigDecimal charges, BigDecimal totalPaid, String recipient, TransactionType type, TransactionStatus status) {
-        Transaction transaction = new Transaction();
-        transaction.setTransactionDate(new Date());
-        transaction.setTransactionRecipient(recipient);
-        transaction.setTransactionId(generateUniqueElevenDigits());
-        transaction.setAmount(amount);
-        transaction.setCharges(charges);
-        transaction.setTotalPaid(totalPaid);
-        transaction.setTransactionType(type);
-        transaction.setTransactionStatus(status);
-        transaction.setWalletId(walletId);
-        transactionRepository.save(transaction);
-    }
-
-    private String generateUniqueElevenDigits() {
-        String transactionId;
-        do {
-            transactionId = WalletConstants.generateAccountNumber();
-        } while (transactionRepository.existsByTransactionId(transactionId));
-        return transactionId;
-    }
-
 
     @Override
     public BankResponse balanceEnquiry() {
@@ -202,6 +192,218 @@ public class TransactionServiceImpl implements TransactionService {
                 .data(accountBalance.doubleValue())
                 .httpStatus(HttpStatus.OK)
                 .build();
+    }
+
+    @Override
+    public BankResponse findAllTransaction() {
+        List<Transaction> transactions = transactionRepository.findAll();
+        return BankResponse.builder()
+                .code(CodeConstants.FOUND)
+                .message(CodeConstants.FOUND_MESSAGE)
+                .data(transactions)
+                .isSuccess(true)
+                .httpStatus(HttpStatus.FOUND)
+                .build();
+    }
+
+    @Override
+    public BankResponse getTransactionById(Long id) {
+        Transaction transaction = transactionRepository.findById(id).orElse(null);
+        if (transaction == null){
+            throw new ResourceNotFoundException("Transaction not found with provided transaction Id!");
+        }
+        return BankResponse.builder()
+                .httpStatus(HttpStatus.FOUND)
+                .code(CodeConstants.FOUND)
+                .message(CodeConstants.FOUND_MESSAGE)
+                .data(transaction)
+                .isSuccess(true)
+                .build();
+    }
+
+    @Override
+    public BankResponse findAllUserTransactionByUserId(Long userId) {
+        Wallet wallet = walletRepository.findWalletByUserId(userId);
+        List<Transaction> transactions = transactionRepository.findAll();
+        List<Transaction> transactionsByUserId = new ArrayList<>();
+        if (transactions.isEmpty()){
+            throw new ResourceNotFoundException("Transaction list is empty");
+        }
+        for (Transaction transaction: transactions){
+            if (transaction.getWalletId().equals(wallet.getUserId())){
+                transactionsByUserId.add(transaction);
+            }
+        }
+
+        return BankResponse.builder()
+                .code(CodeConstants.FOUND)
+                .message(CodeConstants.FOUND_MESSAGE)
+                .data(transactionsByUserId)
+                .isSuccess(true)
+                .httpStatus(HttpStatus.FOUND)
+                .build();
+    }
+
+    @Override
+    public BankResponse getTransactionsByDate(Long userId, Date startDate, Date endDate) {
+        Wallet wallet = walletRepository.findWalletByUserId(userId);
+        if (wallet == null) {
+            throw new ResourceNotFoundException("Wallet not found for user ID: " + userId);
+        }
+        List<Transaction> transactions = transactionRepository.findByWalletIdAndTransactionDateBetween(wallet.getId(), startDate, endDate);
+
+        return BankResponse.builder()
+                .code(CodeConstants.FOUND)
+                .message(CodeConstants.FOUND_MESSAGE)
+                .data(transactions)
+                .isSuccess(true)
+                .httpStatus(HttpStatus.FOUND)
+                .build();
+    }
+
+
+    @Override
+    public BankResponse getSuccessfulTransactions(Long userId) {
+        Wallet wallet = walletRepository.findWalletByUserId(userId);
+        if (wallet == null) {
+            throw new ResourceNotFoundException("Wallet not found for user ID: " + userId);
+        }
+        List<Transaction> successfulTransactions = transactionRepository.findAllByWalletIdAndTransactionStatus(wallet.getId(), TransactionStatus.SUCCESSFUL);
+
+        return BankResponse.builder()
+                .code(CodeConstants.FOUND)
+                .message(CodeConstants.FOUND_MESSAGE)
+                .data(successfulTransactions)
+                .isSuccess(true)
+                .httpStatus(HttpStatus.FOUND)
+                .build();
+    }
+
+
+    // .................Reusable Methods...............
+
+    private BigDecimal calculateTransactionCharge(BigDecimal amount, AccountTier accountTier) {
+        BigDecimal rate = switch (accountTier) {
+            case SILVER -> BigDecimal.valueOf(0.012);
+            case GOLD -> BigDecimal.valueOf(0.014);
+            case PLATINUM -> BigDecimal.valueOf(0.015);
+            default -> BigDecimal.valueOf(0.01);
+        };
+        return amount.multiply(rate);
+    }
+
+    private BigDecimal calculateInstantTransactionLimit(BigDecimal amount, AccountTier accountTier) {
+        return switch (accountTier) {
+            case SILVER -> BigDecimal.valueOf(200000); // Example: 500,000
+            case GOLD -> BigDecimal.valueOf(500000); // Example: 1,000,000
+            case PLATINUM -> BigDecimal.valueOf(Double.MAX_VALUE); // Unlimited
+            default -> BigDecimal.valueOf(100000); // Example: 200,000
+        };
+    }
+
+    private BigDecimal getDailyTransactionLimit(AccountTier accountTier) {
+        return switch (accountTier) {
+            case SILVER -> BigDecimal.valueOf(500000); // Example: 500,000
+            case GOLD -> BigDecimal.valueOf(1000000); // Example: 1,000,000
+            case PLATINUM -> BigDecimal.valueOf(Double.MAX_VALUE); // Unlimited
+            default -> BigDecimal.valueOf(200000); // Example: 200,000
+        };
+    }
+
+    private BigDecimal getWeeklyTransactionLimit(AccountTier accountTier) {
+        return switch (accountTier) {
+            case SILVER -> BigDecimal.valueOf(2000000); // Example: 2,000,000
+            case GOLD -> BigDecimal.valueOf(5000000); // Example: 5,000,000
+            case PLATINUM -> BigDecimal.valueOf(Double.MAX_VALUE); // Unlimited
+            default -> BigDecimal.valueOf(1000000); // Example: 1,000,000
+        };
+    }
+
+    private void checkDailyTransactionLimit(Wallet senderWallet, BigDecimal amount) {
+        LocalDateTime now = LocalDateTime.now();
+        Date startOfDay = Date.from(now.toLocalDate().atStartOfDay(ZoneId.systemDefault()).toInstant());
+        Date endOfDay = Date.from(now.atZone(ZoneId.systemDefault()).toInstant());
+        BigDecimal dailyLimit = getDailyTransactionLimit(senderWallet.getAccountTier());
+        BigDecimal totalDailyTransactions = getTotalTransactionsForPeriod(senderWallet.getId(), startOfDay, endOfDay);
+        if (totalDailyTransactions.add(amount).compareTo(dailyLimit) > 0) {
+            throw new InvalidCredentialsException("Daily transaction limit exceeded.");
+        }
+    }
+
+    private void checkWeeklyTransactionLimit(Wallet senderWallet, BigDecimal amount) {
+        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime startOfWeek = now.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY));
+        Date startOfWeekDate = Date.from(startOfWeek.atZone(ZoneId.systemDefault()).toInstant());
+        Date endOfDay = Date.from(now.atZone(ZoneId.systemDefault()).toInstant());
+        BigDecimal weeklyLimit = getWeeklyTransactionLimit(senderWallet.getAccountTier());
+        BigDecimal totalWeeklyTransactions = getTotalTransactionsForPeriod(senderWallet.getId(), startOfWeekDate, endOfDay);
+        if (totalWeeklyTransactions.add(amount).compareTo(weeklyLimit) > 0) {
+            throw new InvalidCredentialsException("Weekly transaction limit exceeded.");
+        }
+    }
+
+    private BigDecimal getTotalTransactionsForPeriod(Long walletId, Date start, Date end) {
+        List<Transaction> transactions = transactionRepository.findByWalletIdAndTransactionDateBetween(walletId, start, end);
+        return transactions.stream()
+                .map(Transaction::getAmount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    private BigDecimal getMaxBalanceLimit(AccountTier accountTier) {
+        return switch (accountTier) {
+            case SILVER -> BigDecimal.valueOf(1000000);
+            case GOLD -> BigDecimal.valueOf(5000000);
+            case PLATINUM -> BigDecimal.valueOf(Double.MAX_VALUE);
+            default -> BigDecimal.valueOf(500000);
+        };
+    }
+
+    private void deductBalance(Wallet wallet, BigDecimal totalDeduction) {
+        BigDecimal previousAccountBalance = wallet.getAccountBalance();
+        if (previousAccountBalance.compareTo(totalDeduction) < 0) {
+            throw new InvalidCredentialsException("Insufficient funds to cover transaction charges. Current balance: ₦" + previousAccountBalance);
+        }
+        BigDecimal newBalance = previousAccountBalance.subtract(totalDeduction);
+        wallet.setAccountBalance(newBalance);
+        walletRepository.save(wallet);
+        logger.info("New Balance for Wallet ID {}: {}", wallet.getId(), newBalance);
+    }
+
+    private void fundingTransaction(Long walletId, BigDecimal amount, BigDecimal totalReceived, BigDecimal accountBalance, String recipient, TransactionStatus status) {
+        Transaction transaction = new Transaction();
+        transaction.setTransactionDate(new Date());
+        transaction.setTransactionRecipient(recipient);
+        transaction.setTransactionId(generateUniqueElevenDigits());
+        transaction.setAmount(amount);
+        transaction.setTotalReceived(totalReceived);
+        transaction.setAccountBalance(accountBalance);
+        transaction.setTransactionType(TransactionType.FUND);
+        transaction.setTransactionStatus(status);
+        transaction.setWalletId(walletId);
+        transactionRepository.save(transaction);
+    }
+
+    private void withdrawalTransaction(Long walletId, BigDecimal amount, BigDecimal charges, BigDecimal totalPaid, BigDecimal accountBalance, String recipient, TransactionStatus status) {
+        Transaction transaction = new Transaction();
+        transaction.setTransactionDate(new Date());
+        transaction.setTransactionRecipient(recipient);
+        transaction.setTransactionId(generateUniqueElevenDigits());
+        transaction.setAmount(amount);
+        transaction.setCharges(charges);
+        transaction.setTotalPaid(totalPaid);
+        transaction.setAccountBalance(accountBalance);
+        transaction.setTransactionType(TransactionType.WITHDRAW);
+        transaction.setTransactionStatus(status);
+        transaction.setWalletId(walletId);
+        transactionRepository.save(transaction);
+    }
+
+    private String generateUniqueElevenDigits() {
+        String transactionId;
+        do {
+            transactionId = WalletConstants.generateAccountNumber();
+        } while (transactionRepository.existsByTransactionId(transactionId));
+        return transactionId;
     }
 
 

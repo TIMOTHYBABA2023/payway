@@ -59,7 +59,6 @@ protected void doFilterInternal(HttpServletRequest request, HttpServletResponse 
         if (StringUtils.hasText(headerAuth) && headerAuth.startsWith("Bearer ")) {
             return headerAuth.substring(7);
         }
-
         return null;
     }
 

@@ -7,4 +7,7 @@ public class UserUpdateDto {
     private String password;
     private LocalDate dateOfBirth;
     private String address;
+    private String phoneNumber;
+    private String NIN;
+    private String utilityBill;
 }

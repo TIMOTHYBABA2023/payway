@@ -25,6 +25,8 @@ public class Transaction {
     private BigDecimal amount;
     private BigDecimal charges;
     private BigDecimal totalPaid;
+    private BigDecimal totalReceived;
+    private BigDecimal accountBalance;
 
     @Enumerated(EnumType.STRING)
     private TransactionType transactionType;

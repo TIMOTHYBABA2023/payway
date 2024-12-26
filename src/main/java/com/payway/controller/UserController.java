@@ -39,10 +39,24 @@ public class UserController {
         BankResponse genericResponse = userService.updateUser(userUpdateDto, id);
         return new ResponseEntity<>(genericResponse, genericResponse.getHttpStatus());
     }
+    @PostMapping("/silverTierUpgrade/{silverTierRequest}")
+    public ResponseEntity<BankResponse> upgradeToSilverTier(@PathVariable String silverTierRequest){
+        BankResponse genericResponse = userService.upgradeToSilverTier(silverTierRequest);
+        return new ResponseEntity<>(genericResponse, genericResponse.getHttpStatus());
+    }
+    @PostMapping("/goldTierUpgrade/{goldTierRequest}")
+    public ResponseEntity<BankResponse> upgradeToGoldTier(@PathVariable String goldTierRequest){
+        BankResponse genericResponse = userService.upgradeToGoldTier(goldTierRequest);
+        return new ResponseEntity<>(genericResponse, genericResponse.getHttpStatus());
+    }
+    @PostMapping("/platinumTierUpgrade/{platinumTierRequest}")
+    public ResponseEntity<BankResponse> upgradeToPlatinumTier(@PathVariable String platinumTierRequest){
+        BankResponse genericResponse = userService.upgradeToPlatinumTier(platinumTierRequest);
+        return new ResponseEntity<>(genericResponse, genericResponse.getHttpStatus());
+    }
 
-    @DeleteMapping("/{id}")
+    @DeleteMapping("/{userId}")
     public ResponseEntity<BankResponse> deleteUser(@PathVariable Long userId){
-
         BankResponse genericResponse = userService.deleteUser(userId);
         return new ResponseEntity<>(genericResponse, genericResponse.getHttpStatus());
     }

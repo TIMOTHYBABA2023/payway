@@ -1,5 +1,9 @@
 package com.payway.service.serviceImpl;
 
+import com.payway.enums.AccountTier;
+import com.payway.exception.InvalidCredentialsException;
+import com.payway.exception.ResourceNotFoundException;
+import com.payway.utils.AuthUserDetails;
 import com.payway.utils.constants.CodeConstants;
 import com.payway.utils.constants.WalletConstants;
 import com.payway.dto.BankResponse;
@@ -11,10 +15,8 @@ import com.payway.dto.responseDto.SignupResponseDto;
 import com.payway.dto.responseDto.UserResponseDto;
 import com.payway.exception.RoleNotFoundException;
 import com.payway.exception.UserAlreadyExistsException;
-import com.payway.factory.RoleFactory;
 import com.payway.model.User;
 import com.payway.model.Wallet;
-import com.payway.repository.RoleRepository;
 import com.payway.repository.UserRepository;
 import com.payway.repository.WalletRepository;
 import com.payway.security.UserDetailsImpl;
@@ -35,6 +37,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
@@ -106,7 +109,6 @@ public class UserServiceImpl implements UserService {
                     .id(userDetails.getId())
                     .token(jwt)
                     .type("Bearer")
-                    .roles(roles)
                     .build();
 
             return BankResponse.builder()
@@ -174,6 +176,54 @@ public class UserServiceImpl implements UserService {
                 .build();
     }
 
+    @Override
+    public BankResponse upgradeToSilverTier(String silverTierRequest) {
+        if (!Objects.equals(silverTierRequest, "silverTier")){
+            throw new InvalidCredentialsException("Provide valid silver tier upgrade code...");
+        }
+        Wallet wallet = findUserWallet();
+        wallet.setAccountTier(AccountTier.SILVER);
+        walletRepository.save(wallet);
+        return BankResponse.builder()
+                .isSuccess(true)
+                .code(CodeConstants.SUCCESS)
+                .message(CodeConstants.SUCCESS_MESSAGE)
+                .httpStatus(HttpStatus.OK)
+                .build();
+    }
+
+    @Override
+    public BankResponse upgradeToGoldTier(String goldTierRequest) {
+        if (!Objects.equals(goldTierRequest, "goldTier")){
+            throw new InvalidCredentialsException("Provide valid gold tier upgrade code...");
+        }
+        Wallet wallet = findUserWallet();
+        wallet.setAccountTier(AccountTier.GOLD);
+        walletRepository.save(wallet);
+        return BankResponse.builder()
+                .isSuccess(true)
+                .code(CodeConstants.SUCCESS)
+                .message(CodeConstants.SUCCESS_MESSAGE)
+                .httpStatus(HttpStatus.OK)
+                .build();
+    }
+
+    @Override
+    public BankResponse upgradeToPlatinumTier(String platinumTierRequest) {
+        if (!Objects.equals(platinumTierRequest, "platinumTier")){
+            throw new InvalidCredentialsException("Provide valid platinum tier upgrade code...");
+        }
+        Wallet wallet = findUserWallet();
+        wallet.setAccountTier(AccountTier.PLATINUM);
+        walletRepository.save(wallet);
+        return BankResponse.builder()
+                .isSuccess(true)
+                .code(CodeConstants.SUCCESS)
+                .message(CodeConstants.SUCCESS_MESSAGE)
+                .httpStatus(HttpStatus.OK)
+                .build();
+    }
+
     private User createUser(SignUpRequestDto signUpRequestDto) throws RoleNotFoundException {
         String userName;
         if (signUpRequestDto.getMiddleName() == null) {
@@ -198,6 +248,22 @@ public class UserServiceImpl implements UserService {
             accountNumber = WalletConstants.generateAccountNumber();
         } while (walletRepository.existsByAccountNumber(accountNumber));
         return accountNumber;
+    }
+
+    private Wallet findUserWallet() {
+        Long userId = AuthUserDetails.getAuthenticatedUserId();
+
+        User user = userRepository.findById(userId).orElse(null);
+        if (user == null) {
+            logger.warn("No user found with ID: {}", userId);
+            throw new InvalidCredentialsException(CodeConstants.INVALID_CREDENTIALS_MESSAGE);
+        }
+
+        Wallet wallet = walletRepository.findWalletByUserId(user.getId());
+        if (wallet == null) {
+            throw new ResourceNotFoundException(CodeConstants.RESOURCE_NOT_FOUND_MESSAGE);
+        }
+        return wallet;
     }
 
     private BankResponse handleException(Throwable ex) {
